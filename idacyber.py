@@ -18,7 +18,7 @@ from PyQt5.QtCore import Qt, QObject, pyqtSignal, QRect, QSize, QPoint
 
 __author__ = 'Dennis Elser'
 
-banner = """
+BANNER = """
 .___ .______  .______  ._______ ____   ____._______ ._______.______  
 : __|:_ _   \ :      \ :_.  ___\\   \_/   /: __   / : .____/: __   \ 
 | : ||   |   ||   .   ||  : |/\  \___ ___/ |  |>  \ | : _/\ |  \____|
@@ -27,7 +27,7 @@ banner = """
 |___| :/          |___| :/                             :/   |___|
 """
 
-plugin_help = """
+PLUGIN_HELP = """
 IDACyber Quick Manual
 ====================================================================
 
@@ -97,7 +97,7 @@ https://github.com/patois/IDACyber
 # I believe this is Windows-only?
 FONT_DEFAULT = "Consolas"
 HL_COLOR = 0x0037CC
-highlighted_item = None
+HIGHLIGHTED_ITEM = None
 
 class ColorFilter():
     """every new color filters must inherit this class"""
@@ -159,22 +159,21 @@ def is_ida_version(requested):
 
 # -----------------------------------------------------------------------
 def highlight_item(ea):
-    global highlighted_item
-    global HL_COLOR
+    global HIGHLIGHTED_ITEM
 
     unhighlight_item()
     
     current_color = ida_nalt.get_item_color(ea)
-    highlighted_item = (ea, current_color)
+    HIGHLIGHTED_ITEM = (ea, current_color)
     ida_nalt.set_item_color(ea, HL_COLOR)
 
 # -----------------------------------------------------------------------
 def unhighlight_item():
-    global highlighted_item
+    global HIGHLIGHTED_ITEM
 
-    if highlighted_item:
-        ida_nalt.set_item_color(highlighted_item[0], highlighted_item[1])
-        highlighted_item = None
+    if HIGHLIGHTED_ITEM:
+        ida_nalt.set_item_color(HIGHLIGHTED_ITEM[0], HIGHLIGHTED_ITEM[1])
+        HIGHLIGHTED_ITEM = None
 
 # -----------------------------------------------------------------------
 class ScreenEAHook(ida_kernwin.View_Hooks):
@@ -265,6 +264,7 @@ class PixelWidget(QWidget):
         self.lock_width = False
         self.lock_sync = False
         self.link_pixel = True
+        self.highlight_cursor = False
         self.render_data = True
         self.cur_formatter_idx = 0
         self.max_formatters = 2
@@ -282,8 +282,6 @@ class PixelWidget(QWidget):
         self.show()
 
     def paintEvent(self, event):
-        global FONT_DEFAULT
-
         if not self.fm:
             return
 
@@ -569,8 +567,7 @@ class PixelWidget(QWidget):
     # end of functions that can be called by filters
 
     def show_help(self):
-        global plugin_help
-        ida_kernwin.info("%s" % plugin_help)
+        ida_kernwin.info("%s" % PLUGIN_HELP)
 
     def keyPressEvent(self, event):
         if self.key is None:
@@ -753,9 +750,9 @@ class PixelWidget(QWidget):
                 self._update_mouse_coords(event.pos())
                 self.mouseOffs = self._get_offs_by_pos(event.pos())
                 
-                if self.link_pixel:
+                if self.link_pixel and self.highlight_cursor:
                     highlight_item(ida_bytes.get_item_head(self.get_cursor_address()))
-                else:
+                elif self.highlight_cursor:
                     unhighlight_item()
 
                 self.setToolTip(self.fm.on_get_tooltip(self.get_address(), self.get_pixels_total(), self.mouseOffs))
@@ -816,11 +813,13 @@ class PixelWidget(QWidget):
             # disabled for now
             # self.set_zoom(self.fm.zoom)
             self.link_pixel = self.fm.link_pixel
+            self.highlight_cursor = self.fm.highlight_cursor
             self.statechanged.emit()
             """load filter config end"""
 
             self.fm.on_activate(idx)
             self.filter_idx = idx
+            unhighlight_item()
             self.repaint()
 
     def set_addr(self, ea, new_cursor=None):
@@ -831,7 +830,8 @@ class PixelWidget(QWidget):
 
         if new_cursor:
             self.set_cursor_address(new_cursor)
-            highlight_item(ea)
+            if self.highlight_cursor:
+                highlight_item(ea)
 
         self.repaint()
 
@@ -950,6 +950,7 @@ class IDACyberForm(ida_kernwin.PluginForm):
         self.pw = None
         self.parent = None
         self.form = None
+        self.clean_init = False
 
     def _update_widget(self):
         lbl_address = 'Address '
@@ -976,22 +977,21 @@ class IDACyberForm(ida_kernwin.PluginForm):
         self.status.setText(status_text)
 
     def _load_filters(self, pw):
-        # TODO: fix
         filters = []
         filterdir = os.path.join(ida_diskio.idadir('plugins'), 'cyber')
         if not os.path.exists(filterdir):
             usr_plugins_dir = os.path.join(ida_diskio.get_user_idadir(), "plugins")
             filterdir = os.path.join(usr_plugins_dir, 'cyber')
-            if os.path.exists(filterdir):       
-                sys.path.append(filterdir)
-                for entry in os.listdir(filterdir):
-                    if entry.lower().endswith('.py') and entry.lower() != '__init__.py':
-                        mod = os.path.splitext(entry)[0]
-                        fmod = __import__(mod, globals(), locals(), [], 0)
-                        if fmod is not None:
-                            flt = fmod.FILTER_INIT(pw)
-                            if flt is not None:
-                                filters.append((fmod, flt))
+        if os.path.exists(filterdir):
+            sys.path.append(filterdir)
+            for entry in os.listdir(filterdir):
+                if entry.lower().endswith('.py') and entry.lower() != '__init__.py':
+                    mod = os.path.splitext(entry)[0]
+                    fmod = __import__(mod, globals(), locals(), [], 0)
+                    if fmod is not None:
+                        flt = fmod.FILTER_INIT(pw)
+                        if flt is not None:
+                            filters.append((fmod, flt))
         return filters
 
     def _unload_filters(self):
@@ -1036,7 +1036,7 @@ class IDACyberForm(ida_kernwin.PluginForm):
         return ida_kernwin.plgform_show(self.__clink__, self, caption, options)
 
     def OnClose(self, options):
-        if IDACyberForm.hook is not None:
+        if self.clean_init and IDACyberForm.hook is not None:
                 IDACyberForm.hook.new_ea.disconnect(self._change_screen_ea)
 
         IDACyberForm.windows.remove(self.windowidx)
@@ -1079,6 +1079,9 @@ class IDACyberForm(ida_kernwin.PluginForm):
         self.pw.prev_filter.connect(self._select_prev_filter)
 
         self.filterlist = self._load_filters(self.pw)
+        if not len(self.filterlist):
+            ida_kernwin.warning("IDACyber: no filters found within /plugins/cyber/")
+            return
 
         self.pw.set_filter(self.filterlist[0][1], 0)
         self.pw.set_addr(ida_kernwin.get_screen_ea())
@@ -1099,6 +1102,8 @@ class IDACyberForm(ida_kernwin.PluginForm):
         self.parent.setLayout(vl)
         if IDACyberForm.hook is not None:
                 IDACyberForm.hook.new_ea.connect(self._change_screen_ea)
+        self.clean_init = True
+        return
 
 # -----------------------------------------------------------------------
 class idb_hook_t(ida_idp.IDB_Hooks):
@@ -1132,9 +1137,8 @@ class IDACyberPlugin(ida_idaapi.plugin_t):
             ida_kernwin.PluginForm.WOPN_PERSIST |
             ida_kernwin.PluginForm.WCLS_CLOSE_LATER)
 
-        global banner
         ida_kernwin.msg('%s\n+ %s loaded.\n+ %s opens a new instance.\n+ Ctrl-F1 for help.\n\n' % (
-            banner,
+            BANNER,
             IDACyberPlugin.wanted_name,
             IDACyberPlugin.wanted_hotkey))
 
